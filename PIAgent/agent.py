@@ -2,13 +2,13 @@
 
 from google.adk.agents import Agent
 from .shared_libraries import constants
-from . import prompt
+from .prompts import root_prompt_text
 
 
 root_agent = Agent(
     name=constants.AGENT_NAME,
     model=constants.MODEL,
     description=constants.DESCRIPTION,
-    instruction=prompt.ROOT_PROMPT,
+    instruction=root_prompt_text.ROOT_PROMPT,
     tools=[],
 )
