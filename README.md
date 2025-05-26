@@ -1,1 +1,2 @@
 # ProfitPilot
+adk run PIAgent
