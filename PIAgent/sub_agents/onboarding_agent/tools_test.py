@@ -1,14 +1,15 @@
 import uuid
 from google.cloud import bigquery
-import googlemaps
 import os
 from typing import Optional, List, Dict, Any, Union
 
-from ...shared_libraries import constants
+# Import the new Places API client library
+from google.maps import places_v1 as places # This is the most common and correct way to import the new Places API client
+from google.api_core.exceptions import GoogleAPIError
 
 # --- BigQuery Configuration ---
-PROJECT_ID = constants.PROJECT_ID
-DATASET_ID = constants.BQ_DATASET_ID
+PROJECT_ID = 'profitpilot-2cc51'
+DATASET_ID = 'profitpilot_data'
 TABLE_BUSINESS = f"{PROJECT_ID}.{DATASET_ID}.business"
 TABLE_COMPETITOR = f"{PROJECT_ID}.{DATASET_ID}.competitor"
 
@@ -21,13 +22,23 @@ except Exception as e:
     bq_client = None
 
 # --- Google Maps API Configuration ---
-GMAPS_API_KEY = constants.GOOGLE_MAP_API_KEY
+# The new Places API client doesn't use a simple API key directly in its constructor
+# for most methods. It typically relies on Application Default Credentials (ADC).
+# However, you *can* pass an API key directly if desired for specific use cases
+# by setting it in the environment variable GOOGLE_API_KEY.
+# For simplicity in this example, we'll initialize the client directly.
+# Ensure your environment is authenticated via `gcloud auth application-default login`
+# or set GOOGLE_API_KEY if you're using API key authentication for the new API.
+# The `google-maps-places` library will attempt to use ADC by default.
 
-if not GMAPS_API_KEY:
-    print("WARNING: Maps_API_KEY environment variable not set. Maps_search_business will not function.")
-    gmaps_client = None
-else:
-    gmaps_client = googlemaps.Client(key=GMAPS_API_KEY)
+# Initialize the new Places API client
+# No direct API key needed in the constructor if using ADC.
+try:
+    places_client = places.PlacesClient()
+    print("New Google Places API client initialized.")
+except Exception as e:
+    print(f"Error initializing New Google Places API client: {e}")
+    places_client = None
 
 
 # --- Tool Functions for Onboarding Agent ---
@@ -45,12 +56,11 @@ def db_check_business_exists(business_name: str) -> List[Dict[str, Any]]:
                               business details (e.g., 'business_id', 'name', 'address', etc.).
                               Returns an empty list if no matches are found.
     """
-    print(f"ADK Tool Call: db_check_business_exists(business_name='{business_name}')")
+    print(f"\n--- ADK Tool Call: db_check_business_exists(business_name='{business_name}') ---")
     if not bq_client:
         print("BigQuery client not initialized. Cannot check business existence.")
         return []
 
-    # Query only by business_name as per original signature
     query = f"""
     SELECT
         id, g_m_b_id, address, business_id, business_type, description, name, owner_contact_info
@@ -69,6 +79,18 @@ def db_check_business_exists(business_name: str) -> List[Dict[str, Any]]:
 
         matches = []
         for row in rows:
+            owner_contact = row.owner_contact_info
+            if isinstance(owner_contact, dict) and "primary" in owner_contact:
+                owner_contact = owner_contact["primary"]
+            elif isinstance(owner_contact, str):
+                try:
+                    import json
+                    parsed_contact = json.loads(owner_contact)
+                    if isinstance(parsed_contact, dict) and "primary" in parsed_contact:
+                        owner_contact = parsed_contact["primary"]
+                except json.JSONDecodeError:
+                    pass
+
             matches.append({
                 "id": row.id,
                 "gmb_id": row.g_m_b_id,
@@ -77,7 +99,7 @@ def db_check_business_exists(business_name: str) -> List[Dict[str, Any]]:
                 "business_type": row.business_type,
                 "description": row.description,
                 "name": row.name,
-                "owner_contact": row.owner_contact_info
+                "owner_contact": owner_contact
             })
 
         if not matches:
@@ -109,7 +131,7 @@ def db_create_business(name: str, address: str, business_type: str, description:
         Optional[Dict[str, Any]]: A dictionary containing the newly created business's details
                                   including its 'business_id', otherwise None if creation fails.
     """
-    print(f"ADK Tool Call: db_create_business(name='{name}', address='{address}', business_type='{business_type}', description='{description}', gmb_id='{gmb_id}', owner_contact='{owner_contact}')")
+    print(f"\n--- ADK Tool Call: db_create_business(name='{name}', address='{address}', business_type='{business_type}', description='{description}', gmb_id='{gmb_id}', owner_contact='{owner_contact}') ---")
     if not bq_client:
         print("BigQuery client not initialized. Cannot create business.")
         return None
@@ -125,10 +147,9 @@ def db_create_business(name: str, address: str, business_type: str, description:
     )
     """
 
-    owner_contact_json = {}
-    if owner_contact:
-        owner_contact_json = {"primary": owner_contact}
-    owner_contact_info_str = str(owner_contact_json).replace("'", '"')
+    owner_contact_json_val = {"primary": owner_contact} if owner_contact else {}
+    import json
+    owner_contact_info_str = json.dumps(owner_contact_json_val)
 
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
@@ -178,7 +199,7 @@ def db_check_competitors_exist(business_id: str) -> List[Dict[str, Any]]:
                               competitor details ('name', 'website_url', 'google_place_id').
                               Returns an empty list if no competitors are found.
     """
-    print(f"ADK Tool Call: db_check_competitors_exist(business_id='{business_id}')")
+    print(f"\n--- ADK Tool Call: db_check_competitors_exist(business_id='{business_id}') ---")
     if not bq_client:
         print("BigQuery client not initialized. Cannot check competitors.")
         return []
@@ -231,7 +252,7 @@ def db_add_competitor(business_id: str, competitor_name: str, website_url: str,
     Returns:
         bool: True if the competitor was successfully added, False otherwise.
     """
-    print(f"ADK Tool Call: db_add_competitor(business_id='{business_id}', competitor_name='{competitor_name}', website_url='{website_url}', google_place_id='{google_place_id}')")
+    print(f"\n--- ADK Tool Call: db_add_competitor(business_id='{business_id}', competitor_name='{competitor_name}', website_url='{website_url}', google_place_id='{google_place_id}') ---")
     if not bq_client:
         print("BigQuery client not initialized. Cannot add competitor.")
         return False
@@ -269,9 +290,12 @@ def db_add_competitor(business_id: str, competitor_name: str, website_url: str,
         return False
 
 
+# --- MIGRATED Maps_search_business function ---
+# --- MIGRATED Maps_search_business function ---
 def Maps_search_business(query: str, location_bias: Optional[Dict[str, float]] = None) -> List[Dict[str, Any]]:
     """
-    Searches Google Maps for business information using the actual Google Maps Places API.
+    Searches Google Maps for business information using the NEW Google Places API.
+    It performs a Text Search and explicitly requests fields like website and phone number.
 
     Args:
         query (str): The business name and/or address (e.g., "Nike 8887 Thornel St Houston").
@@ -282,68 +306,80 @@ def Maps_search_business(query: str, location_bias: Optional[Dict[str, float]] =
         List[Dict[str, Any]]: A list of dictionaries, each representing a found business
                               with keys like 'name', 'address', 'place_id', 'website', 'phone_number'.
     """
-    print(f"ADK Tool Call: Maps_search_business(query='{query}', location_bias={location_bias})")
-    if not gmaps_client:
-        print("Google Maps client not initialized. Cannot search businesses.")
+    print(f"\n--- ADK Tool Call: Maps_search_business(query='{query}', location_bias={location_bias}) (New Places API) ---")
+    if not places_client:
+        print("New Google Places API client not initialized. Cannot search businesses.")
         return []
 
     try:
-        gmaps_location = None
-        gmaps_radius = None # Default to no radius unless specified
-        if location_bias and 'lat' in location_bias and 'lng' in location_bias:
-            gmaps_location = (location_bias['lat'], location_bias['lng'])
-            # You might want to pass a default radius here if a general bias is expected
-            # For `text_search`, location and radius define the search area.
-            # If the user provides a "location_bias" but no explicit radius, pick a reasonable default
-            gmaps_radius = 5000 # Example: 5km radius for biasing
+        # Define the location bias if provided
+       
+        # Define the fields you want to retrieve.
+        # Note: New API uses 'websiteUri' and 'internationalPhoneNumber' as attribute names.
+        # Also, formattedAddress and displayName are nested under Place.
+        # place.id is the Place ID.
+        field_mask = [
+            "places.displayName",
+            "places.formattedAddress",
+            "places.id", # This is the Place ID
+            "places.websiteUri", # New field name for website
+            "places.internationalPhoneNumber", # New field name for phone number
+            "places.location" # Includes lat/lng if you need them later
+        ]
 
-        response = gmaps_client.places(
-            query=query,
-            location=gmaps_location, # Pass if available, else None
-            radius=gmaps_radius # Pass if available, else None
+        request = places.SearchTextRequest(
+            text_query=query,
+            
+            fields=field_mask # Specify the fields you want
         )
-        # print(f"Google Maps API Response: {response}")
+
+        # Perform the search
+        response = places_client.search_text(request=request)
+
         results = []
-        if 'results' in response:
-            for place in response['results']:
-                results.append({
-                    'name': place.get('name'),
-                    'address': place.get('formatted_address'),
-                    'place_id': place.get('place_id'),
-                    'website': place.get('website'),
-                    'phone_number': place.get('nationalPhoneNumber')
-                })
-        print(f"Google Maps: Found {len(results)} businesses for '{query}'.")
+        for place_obj in response.places:
+            # Access data from the Place object returned by the new API
+            results.append({
+                'name': place_obj.display_name.text if place_obj.display_name else None,
+                'address': place_obj.formatted_address,
+                'place_id': place_obj.id, # The unique place ID
+                'website': place_obj.website_uri, # Access website URI
+                'phone_number': place_obj.international_phone_number # Access international phone number
+            })
+
+        print(f"New Google Places API: Found {len(results)} businesses for '{query}'.")
         return results
 
+    except GoogleAPIError as e:
+        print(f"Google Places API (New) Error: {e.message}")
+        print("Ensure 'Places API (New)' is enabled in your Google Cloud project and credentials are correct.")
+        return []
     except Exception as e:
-        print(f"Error searching Google Maps: {e}")
+        print(f"Error searching Google Maps (New API): {e}")
         return []
     
-
 # --- Main function for independent testing ---
 if __name__ == "__main__":
-    # from ...shared_libraries import constants
-    print("--- Starting independent tool testing ---")
+    print("--- Starting independent tool testing (New Places API) ---")
 
     # # --- Test 1: Check Business Exists (initial search) ---
     # print("\nAttempting to find 'Test Business 123' (should not exist initially)...")
-    # existing_businesses = db_check_business_exists("Bean & Brew Cafe")
+    # existing_businesses = db_check_business_exists("Test Business 123")
     # print(f"Result for 'Test Business 123': {existing_businesses}")
     # if not existing_businesses:
     #     print("Test 1 Passed: 'Test Business 123' correctly reported as not found.")
     # else:
     #     print("Test 1 Failed: 'Test Business 123' found unexpectedly.")
 
-    # --- Test 2: Create a New Business ---
-    # print("\nCreating a new business: 'My Test Shop'...")
+    # # --- Test 2: Create a New Business ---
+    # print("\nCreating a new business: 'My Test Shop V2'...")
     # new_business_details = db_create_business(
-    #     name="My Test Shop",
-    #     address="123 Test St, Test City, TS 12345",
+    #     name="My Test Shop V2",
+    #     address="456 New Test Ln, New City, NL 67890",
     #     business_type="Retail",
-    #     description="A shop for testing purposes.",
-    #     gmb_id="test_gmb_id",
-    #     owner_contact="test@example.com"
+    #     description="A shop for testing purposes with New API.",
+    #     gmb_id="test_gmb_id_v2",
+    #     owner_contact="test_v2@example.com"
     # )
     # if new_business_details:
     #     print(f"Test 2 Passed: New business created: {new_business_details}")
@@ -364,55 +400,80 @@ if __name__ == "__main__":
     #     print("\nSkipping Test 3: Business not created in previous step.")
 
 
-    # --- Test 4: Search Google Maps ---
-    print("\nSearching Google Maps for 'Starbucks Houston Galleria'...")
-    gmaps_results = Maps_search_business("Starbucks Houston Galleria")
+    # --- Test 4: Search Google Maps (New API - expecting website/phone) ---
+    print("\nSearching Google Maps (New API) for 'Starbucks The Galleria Houston' (expecting website/phone)...")
+    # Location bias for Houston, TX
+    # houston_galleria_bias = {'lat': 29.7277, 'lng': -95.4627}
+    gmaps_results = Maps_search_business("Starbucks The Galleria Houston")
     if gmaps_results:
-        print(f"Test 4 Passed: Found {len(gmaps_results)} results from Google Maps.")
+        print(f"Test 4 Passed: Found {len(gmaps_results)} results from New Google Places API.")
         for i, res in enumerate(gmaps_results[:3]): # Print first 3 results
-            print(f"  Result {i+1}: Name: {res.get('name')}, Address: {res.get('address')}, Place ID: {res.get('place_id')}")
+            print(f"  Result {i+1}: Name: {res.get('name')}, Address: {res.get('address')}, Place ID: {res.get('place_id')}, Website: {res.get('website')}, Phone: {res.get('phone_number')}")
+            if res.get('website') or res.get('phone_number'):
+                print("    (Website/Phone found for this entry - GOOD!)")
+            else:
+                print("    (Website/Phone NOT found for this entry - potentially missing from Google data)")
     else:
-        print("Test 4 Failed: No results from Google Maps.")
+        print("Test 4 Failed: No results from New Google Places API.")
 
 
-    # --- Test 5: Check Competitors (for the new business, should be empty) ---
-    # created_business_id='biz_629fd84f'
+    # # --- Test 5: Check Competitors (for the new business, should be empty) ---
     # if created_business_id:
-    #     print(f"\nChecking competitors for created_business_id (should be empty initially)...")
+    #     print(f"\nChecking competitors for '{new_business_details['name']}' (should be empty initially)...")
     #     competitors = db_check_competitors_exist(created_business_id)
     #     if not competitors:
-    #         print(f"Test 5 Passed: No competitors found for created_business_id")
+    #         print(f"Test 5 Passed: No competitors found for {new_business_details['name']}.")
     #     else:
     #         print(f"Test 5 Failed: Unexpected competitors found: {competitors}")
     # else:
     #     print("\nSkipping Test 5: Business not created.")
 
-    # --- Test 6: Add a Competitor ---
+    # # --- Test 6: Add a Competitor ---
     # if created_business_id:
-    #     print(f"\nAdding competitor 'Competitor Co.' to created_business_id...")
-    #     competitor_added = db_add_competitor(
-    #         business_id=created_business_id,
-    #         competitor_name="Competitor Co.",
-    #         website_url="https://competitor.com",
-    #         google_place_id="comp_place_id_123"
-    #     )
-    #     if competitor_added:
-    #         print("Test 6 Passed: Competitor 'Competitor Co.' added successfully.")
+    #     print(f"\nAdding competitor 'New Competitor Co.' to '{new_business_details['name']}'...")
+    #     # Search for competitor details using Maps_search_business to get place_id, website, phone
+    #     competitor_search_query = "Foot Locker The Galleria Houston"
+    #     competitor_maps_results = Maps_search_business(competitor_search_query, location_bias=houston_galleria_bias)
+    #     competitor_to_add = None
+    #     if competitor_maps_results:
+    #         competitor_to_add = competitor_maps_results[0] # Take the first result
+    #         print(f"  Found competitor details via Maps (New API): {competitor_to_add}")
+
+    #         competitor_added = db_add_competitor(
+    #             business_id=created_business_id,
+    #             competitor_name=competitor_to_add.get('name', "Unknown Competitor"),
+    #             website_url=competitor_to_add.get('website', ""), # Use fetched website
+    #             google_place_id=competitor_to_add.get('place_id')
+    #         )
+    #         if competitor_added:
+    #             print("Test 6 Passed: Competitor 'Foot Locker' added successfully using New Maps API data.")
+    #         else:
+    #             print("Test 6 Failed: Failed to add competitor.")
     #     else:
-    #         print("Test 6 Failed: Failed to add competitor.")
+    #         print(f"  Could not find '{competitor_search_query}' on Maps (New API). Adding with dummy data.")
+    #         competitor_added = db_add_competitor(
+    #             business_id=created_business_id,
+    #             competitor_name="Foot Locker (Manual V2)",
+    #             website_url="https://footlocker.com",
+    #             google_place_id="manual_comp_place_id_v2"
+    #         )
+    #         if competitor_added:
+    #             print("Test 6 Passed: Competitor 'Foot Locker (Manual V2)' added successfully.")
+    #         else:
+    #             print("Test 6 Failed: Failed to add competitor.")
     # else:
     #     print("\nSkipping Test 6: Business not created.")
 
-    # --- Test 7: Check Competitors (after adding one) ---
+    # # --- Test 7: Check Competitors (after adding one) ---
     # if created_business_id:
-    #     print(f"\nRe-checking competitors for created_business_id (should now have one)...")
+    #     print(f"\nRe-checking competitors for '{new_business_details['name']}' (should now have one)...")
     #     competitors_after_add = db_check_competitors_exist(created_business_id)
-    #     if competitors_after_add and len(competitors_after_add) == 1 and competitors_after_add[0]['name'] == 'Competitor Co.':
-    #         print(f"Test 7 Passed: Found 1 competitor: {competitors_after_add[0]['name']}.")
+    #     if competitors_after_add and len(competitors_after_add) == 1 and ('Foot Locker' in competitors_after_add[0]['name'] or 'Foot Locker (Manual V2)' in competitors_after_add[0]['name']):
+    #         print(f"Test 7 Passed: Found 1 competitor: {competitors_after_add[0]['name']} with website: {competitors_after_add[0]['website_url']}.")
     #     else:
     #         print(f"Test 7 Failed: Expected 1 competitor, found: {competitors_after_add}")
     # else:
     #     print("\nSkipping Test 7: Business not created.")
 
 
-    print("\n--- Independent tool testing complete ---")
+    print("\n--- Independent tool testing complete (New Places API) ---")

@@ -30,6 +30,7 @@ You have access to the following tools:
     * **After the user provides the business name and address (and potentially a description), you MUST ensure these are stored as `business_name`, `address`, and `description` variables in your internal context.** Extract them from the user's current input if not already present.
 
 2.  **After primary business details are established (either confirmed or collected):**
+    * **g_m_b_id and place_id is same** If the user provides a Google My Business ID or Place ID, store it as `gmb_id`.
     * Call `db_check_business_exists` using the **`business_name` and `address` variables**.
     * **If `db_check_business_exists` returns results (a list of one or more matches):**
         * If there's only one match: "I found a business in our system. Is this your business?" (Ask for confirmation and internally refer to the business name, for example: `db_check_business_exists(business_name=business_name, address=address)`). If confirmed, proceed to gather competitor information using this `business_id`.
@@ -49,6 +50,7 @@ You have access to the following tools:
     * Call `db_check_competitors_exist` using the `business_id`.
     * **If competitors exist:** Inform the user that competitors are already set up.
     * **If competitors do not exist:** Immediately ask the user to provide the `name`, `website_url`, and optionally `google_place_id` for at least one of their primary competitors.
+    * **Call google Maps search for competitors** if the user provides a competitor name and address, using `Maps_search_business` with the competitor's name and address.
 7.  **Add Competitors:** For each new competitor provided, call `db_add_competitor` using the `business_id` you just created or confirmed.
 8.  **Final Confirmation:** Once you've confirmed the business and added at least one competitor (or they already existed), inform the user that setup is complete and they can now ask ProfitPilot AI for insights. Signal back to the Root Agent that the onboarding process has finished (this might be an internal ADK mechanism).
 """
