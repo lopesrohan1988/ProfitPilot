@@ -395,11 +395,11 @@ def db_get_processed_reviews(business_id: str, entity_type: Optional[str] = None
 def agent_call_customer_sentiment_analyst_for_reviews(business_id: str, competitor_ids: List[str]) -> bool:
     """
     Calls Google Maps Places API to get raw reviews for the main business and its competitors.
-    It then stores these raw reviews directly into the `business_review` BigQuery table,
-    setting sentiment and entity fields to default/empty values as no NLP processing is performed here.
+    It then stores these raw reviews directly into the `business_review` BigQuery table.
 
     Args:
-        business_id (str): The ID of the primary business.
+        business_id (str): The ID of the primary business that *owns* this review collection task.
+                           (Used to fetch business details and competitor details).
         competitor_ids (List[str]): A list of internal competitor IDs whose reviews need to be collected.
 
     Returns:
@@ -407,43 +407,43 @@ def agent_call_customer_sentiment_analyst_for_reviews(business_id: str, competit
     """
     print(f"\n--- Comparative Agent Tool Call: agent_call_customer_sentiment_analyst_for_reviews ---")
     
-    business_details = db_get_business_details(business_id)
+    business_details = db_get_business_details(business_id) # This business_id refers to your main business
     if not business_details or not business_details.get('gmb_id'):
         print(f"Error: Could not retrieve main business details or Google Place ID for business_id '{business_id}'.")
         return False
 
-    business_place_id = business_details['gmb_id']
-    business_name = business_details.get('name', 'Your Business')
+    main_business_place_id = business_details['gmb_id']
+    main_business_internal_id = business_details['business_id'] # This is the ID of YOUR main business
+    main_business_name = business_details.get('name', 'Your Business')
 
     # Collect and store raw reviews for the main business
-    print(f"Retrieving and storing raw reviews for main business '{business_name}' (Place ID: {business_place_id})...")
-    raw_business_reviews = maps_get_place_reviews(business_place_id)
+    print(f"Retrieving and storing raw reviews for main business '{main_business_name}' (Place ID: {main_business_place_id})...")
+    raw_business_reviews = maps_get_place_reviews(main_business_place_id)
     
     for i, review in enumerate(raw_business_reviews):
-        # Store raw data directly, with default/empty values for NLP fields
         full_review_data = {
             "rating": review.get('rating'),
             "text": review.get('text'),
             "publish_time": review.get('publish_time'),
-            "sentiment_score": 0.0, # Default as no NLP processing is done here
-            "sentiment_magnitude": 0.0, # Default
-            "entities": [], # Default
-            "themes": [], # Default
-            "entity_sentiment": {}, # Default
-            "processed_timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() # Current timestamp
+            "sentiment_score": 0.0,
+            "sentiment_magnitude": 0.0,
+            "entities": [],
+            "themes": [],
+            "entity_sentiment": {},
+            "processed_timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }
-        review_id_from_source = f"gmb_{business_place_id}_{i}_{str(hash(review.get('text', '')))}"
+        review_id_from_source = f"gmb_{main_business_place_id}_{i}_{str(hash(review.get('text', '')))}"
 
         db_store_processed_review(
             review_data=full_review_data,
-            business_id=business_id,
+            business_id=main_business_internal_id, # Store your main business's ID
             review_source="Google Maps",
             entity_type="business",
             review_id=review_id_from_source
         )
 
     # Collect and store raw reviews for competitors
-    competitors_db = db_get_competitors(business_id)
+    competitors_db = db_get_competitors(business_id) # Still get competitors linked to your main business
     filtered_competitors = [
         comp for comp in competitors_db if comp.get('competitor_id') in competitor_ids
     ]
@@ -451,8 +451,9 @@ def agent_call_customer_sentiment_analyst_for_reviews(business_id: str, competit
     for comp in filtered_competitors:
         comp_name = comp.get('name', 'Unknown Competitor')
         comp_place_id = comp.get('google_place_id')
-        
-        if comp_place_id:
+        comp_internal_id = comp.get('competitor_id') # This is the ID of the competitor to store
+
+        if comp_place_id and comp_internal_id:
             print(f"Retrieving and storing raw reviews for competitor '{comp_name}' (Place ID: {comp_place_id})...")
             raw_comp_reviews = maps_get_place_reviews(comp_place_id)
             
@@ -461,27 +462,27 @@ def agent_call_customer_sentiment_analyst_for_reviews(business_id: str, competit
                     "rating": review.get('rating'),
                     "text": review.get('text'),
                     "publish_time": review.get('publish_time'),
-                    "sentiment_score": 0.0, # Default
-                    "sentiment_magnitude": 0.0, # Default
-                    "entities": [], # Default
-                    "themes": [], # Default
-                    "entity_sentiment": {}, # Default
-                    "processed_timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() 
+                    "sentiment_score": 0.0,
+                    "sentiment_magnitude": 0.0,
+                    "entities": [],
+                    "themes": [],
+                    "entity_sentiment": {},
+                    "processed_timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
                 }
                 review_id_from_source = f"gmb_{comp_place_id}_{i}_{str(hash(review.get('text', '')))}"
 
                 db_store_processed_review(
                     review_data=full_review_data,
-                    business_id=business_id,
+                    business_id=comp_internal_id, # Store the competitor's ID
                     review_source="Google Maps",
                     entity_type="competitor",
                     review_id=review_id_from_source
                 )
         else:
-            print(f"Warning: Competitor '{comp_name}' has no Google Place ID. Skipping raw review collection.")
+            print(f"Warning: Competitor '{comp_name}' has no Google Place ID or internal ID. Skipping raw review collection.")
 
     print(f"Customer Sentiment Analyst: Raw review collection and storage complete.")
-    return True 
+    return True
 
 
 def generate_review_comparison_prompt(
@@ -506,7 +507,7 @@ def generate_review_comparison_prompt(
         f"You are a highly analytical business intelligence expert. Your task is to perform a comparative sentiment and thematic analysis of customer reviews for '{business_name}' against its competitors.",
         "The reviews provided have already undergone preliminary sentiment and entity extraction. Leverage this information.",
         "Provide insights on strengths, weaknesses, common complaints, and unique selling propositions for each entity based on their reviews. Highlight key differences and opportunities for '{business_name}'.",
-        "Structure your analysis clearly with sections for 'Overall Sentiment Summary', 'Key Themes and Entity Analysis', 'Strengths Identified', 'Weaknesses Identified', 'Opportunities for [Your Business Name]', and 'Overall Competitive Comparison Summary'.",
+        "Structure your analysis clearly with sections for 'Overall Sentiment Summary', 'Key Themes and Entity Analysis', 'Strengths Identified', 'Weaknesses Identified', 'Opportunities for {business_name}', and 'Overall Competitive Comparison Summary'.", # Updated placeholder
         "Analyze trends and specific examples from the reviews to support your points. Focus on actionable insights.",
         "\n--- Processed Reviews for Your Business: ---"
     ]
@@ -515,11 +516,14 @@ def generate_review_comparison_prompt(
         prompt_parts.append(f"No processed reviews found for {business_name}.")
     else:
         for i, review in enumerate(business_processed_reviews[:15]): 
-            text_snippet = review.get('text', 'No text available.')[:200] + "..." if review.get('text') and len(review['text']) > 200 else review.get('text', 'No text available.')
-            prompt_parts.append(f"Review {i+1}:")
+            text_snippet = review.get('text', 'No text available.')
+            if text_snippet and len(text_snippet) > 200:
+                text_snippet = text_snippet[:200] + "..."
+            
+            prompt_parts.append(f"Review for {business_name} (No. {i+1}):") # Explicitly name the business
             prompt_parts.append(f"  - Text: \"{text_snippet}\"")
             prompt_parts.append(f"  - Rating: {review.get('rating')} stars")
-            prompt_parts.append(f"  - Sentiment: Score={review.get('sentiment_score'):.2f}, Magnitude={review.get('sentiment_magnitude'):.2f}")
+            prompt_parts.append(f"  - Sentiment: Score={review.get('sentiment_score', 0.0):.2f}, Magnitude={review.get('sentiment_magnitude', 0.0):.2f}")
             if review.get('themes'):
                 prompt_parts.append(f"  - Themes: {', '.join(review['themes'])}")
             if review.get('entities'):
@@ -534,11 +538,14 @@ def generate_review_comparison_prompt(
             prompt_parts.append(f"No processed reviews found for {comp_name}.")
         else:
             for i, review in enumerate(reviews[:15]): 
-                text_snippet = review.get('text', 'No text available.')[:200] + "..." if review.get('text') and len(review['text']) > 200 else review.get('text', 'No text available.')
-                prompt_parts.append(f"Review {i+1}:")
+                text_snippet = review.get('text', 'No text available.')
+                if text_snippet and len(text_snippet) > 200:
+                    text_snippet = text_snippet[:200] + "..."
+                
+                prompt_parts.append(f"Review for {comp_name} (No. {i+1}):") # Explicitly name the competitor here
                 prompt_parts.append(f"  - Text: \"{text_snippet}\"")
                 prompt_parts.append(f"  - Rating: {review.get('rating')} stars")
-                prompt_parts.append(f"  - Sentiment: Score={review.get('sentiment_score'):.2f}, Magnitude={review.get('sentiment_magnitude'):.2f}")
+                prompt_parts.append(f"  - Sentiment: Score={review.get('sentiment_score', 0.0):.2f}, Magnitude={review.get('sentiment_magnitude', 0.0):.2f}")
                 if review.get('themes'):
                     prompt_parts.append(f"  - Themes: {', '.join(review['themes'])}")
                 if review.get('entities'):
@@ -580,64 +587,67 @@ def call_gemini_api(prompt: str) -> Optional[str]:
         return None
 
 
-def agent_call_competitive_edge_analyst(business_id: str) -> Optional[str]:
+def agent_call_competitive_edge_analyst(main_business_id: str) -> Optional[str]:
     """
     Calls the Competitive Edge Analyst to perform a comparison on *processed reviews*
     using the Gemini API.
 
     Args:
-        business_id (str): The ID of the primary business for which to perform the comparison.
+        main_business_id (str): The ID of the primary business for which to perform the comparison.
 
     Returns:
         Optional[str]: The comparative analysis results from the Gemini API, or None if analysis fails.
     """
     print(f"\n--- Comparative Agent Tool Call: agent_call_competitive_edge_analyst ---")
-    print(f"  Performing competitive review analysis for business: '{business_id}' using Gemini API.")
+    print(f"  Performing competitive review analysis for business: '{main_business_id}' using Gemini API.")
+
+    # Get main business details to retrieve its internal ID and name
+    business_details = db_get_business_details(main_business_id)
+    if not business_details or not business_details.get('business_id'):
+        print(f"Competitive Edge Analyst: Could not retrieve main business details for ID '{main_business_id}'.")
+        return None
+    
+    main_business_internal_id = business_details['business_id']
+    business_name = business_details.get('name', 'Your Business')
 
     # 1. Retrieve the *processed* reviews from `business_review` table
-    business_processed_reviews = db_get_processed_reviews(business_id, entity_type="business")
-    all_competitor_processed_reviews = db_get_processed_reviews(business_id, entity_type="competitor")
+    # Get reviews for the main business itself
+    business_processed_reviews = db_get_processed_reviews(main_business_internal_id, entity_type="business")
     
-    if not business_processed_reviews and not all_competitor_processed_reviews:
-        print("Competitive Edge Analyst: No processed review data found in DB. Cannot perform analysis.")
+    # Get all competitors linked to this main business from the `competitor` table
+    competitors_db = db_get_competitors(main_business_id)
+    
+    competitor_processed_reviews_map_for_prompt = {}
+    
+    # Iterate through each competitor and fetch their reviews
+    for comp in competitors_db:
+        comp_internal_id = comp.get('competitor_id')
+        comp_name = comp.get('name', 'Unknown Competitor')
+        
+        if comp_internal_id:
+            # Fetch reviews for this specific competitor, using its internal ID
+            competitor_reviews = db_get_processed_reviews(comp_internal_id, entity_type="competitor")
+            if competitor_reviews:
+                competitor_processed_reviews_map_for_prompt[comp_name] = competitor_reviews
+            else:
+                print(f"No processed reviews found for competitor '{comp_name}' (ID: {comp_internal_id}).")
+        else:
+            print(f"Warning: Competitor '{comp_name}' has no internal ID. Skipping review retrieval for this competitor.")
+
+    if not business_processed_reviews and not competitor_processed_reviews_map_for_prompt:
+        print("Competitive Edge Analyst: No processed review data found in DB for the business or its competitors. Cannot perform analysis.")
         return None
-
-    # Get business name for the prompt
-    business_details = db_get_business_details(business_id)
-    business_name = business_details.get('name', 'Your Business') if business_details else 'Your Business'
-
-    # Organize competitor reviews by name for the prompt
-    competitors_db = db_get_competitors(business_id)
-    competitor_name_map = {c['competitor_id']: c['name'] for c in competitors_db}
-    
-    competitor_processed_reviews_for_prompt = {}
-    for review in all_competitor_processed_reviews:
-        # Assuming entity_name is part of the stored review for competitors or derive from competitor_id
-        # For this version, we'll map back using competitor_id to name if available
-        # or use a generic "Unknown Competitor" if not.
-        associated_comp_name = "Unknown Competitor"
-        for comp_db_entry in competitors_db:
-            if comp_db_entry.get('google_place_id') == review.get('gmb_id_source') or comp_db_entry.get('competitor_id') == review.get('competitor_id'):
-                associated_comp_name = comp_db_entry['name']
-                break
-        # If 'entity_name' is a column in business_review table, use that
-        if 'entity_name' in review and review['entity_name']:
-            associated_comp_name = review['entity_name']
-
-        if associated_comp_name not in competitor_processed_reviews_for_prompt:
-            competitor_processed_reviews_for_prompt[associated_comp_name] = []
-        competitor_processed_reviews_for_prompt[associated_comp_name].append(review)
-
 
     # 2. Generate the prompt for Gemini API
     comparison_prompt = generate_review_comparison_prompt(
         business_name=business_name,
         business_processed_reviews=business_processed_reviews,
-        competitor_processed_reviews_map=competitor_processed_reviews_for_prompt
+        competitor_processed_reviews_map=competitor_processed_reviews_map_for_prompt
     )
     
     # 3. Call Gemini API
-    print("Calling Gemini API for review comparison analysis...")
+    print("Calling Gemini API for review comparison analysis with Prompt:")
+    # print(comparison_prompt)  # Temporarily commented out to avoid excessively long prints
     gemini_analysis = call_gemini_api(comparison_prompt)
 
     if gemini_analysis:
