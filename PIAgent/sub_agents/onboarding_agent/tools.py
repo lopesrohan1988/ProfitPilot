@@ -3,14 +3,26 @@ from google.cloud import bigquery
 import googlemaps
 import os
 from typing import Optional, List, Dict, Any, Union
-
+import json
+import datetime
+import random 
 from ...shared_libraries import constants
+# Import the OLDER Google Maps client library
+import googlemaps
+from google.api_core.exceptions import GoogleAPIError
+from ..comparision_agent.tools import db_get_business_details
+
+import google.generativeai as genai
+import dotenv
+dotenv.load_dotenv()
 
 # --- BigQuery Configuration ---
 PROJECT_ID = constants.PROJECT_ID
 DATASET_ID = constants.BQ_DATASET_ID
 TABLE_BUSINESS = f"{PROJECT_ID}.{DATASET_ID}.business"
 TABLE_COMPETITOR = f"{PROJECT_ID}.{DATASET_ID}.competitor"
+TABLE_INVENTORY_ITEM = f"{PROJECT_ID}.{DATASET_ID}.inventory_item" # New table constant
+TABLE_SALES_TRANSACTION = f"{PROJECT_ID}.{DATASET_ID}.sales_transaction" # New table constant
 
 # --- BigQuery Client Initialization ---
 try:
@@ -29,7 +41,24 @@ if not GMAPS_API_KEY:
 else:
     gmaps_client = googlemaps.Client(key=GMAPS_API_KEY)
 
+# --- Gemini API Configuration ---
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY") # Using GOOGLE_API_KEY as per your setup
+if not GEMINI_API_KEY:
+    print("Warning: GOOGLE_API_KEY environment variable not set. Gemini API calls might fail.")
+else:
+    genai.configure(api_key=GEMINI_API_KEY)
+    print("Gemini API configured.")
 
+
+
+
+# --- Gemini Model Initialization ---
+try:
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+    print("Gemini model initialized for text generation.")
+except Exception as e:
+    print(f"Error initializing Gemini model: {e}")
+    gemini_model = None
 # --- Tool Functions for Onboarding Agent ---
 
 def db_check_business_exists(business_name: str) -> List[Dict[str, Any]]:
@@ -321,6 +350,326 @@ def Maps_search_business(query: str, location_bias: Optional[Dict[str, float]] =
         return []
     
 
+
+
+
+def db_insert_inventory_item(item_data: Dict[str, Any]) -> bool:
+    """
+    Inserts a single inventory item into the `inventory_item` BigQuery table.
+    """
+    print(f"\n--- Tool Call: db_insert_inventory_item ---")
+    if not bq_client:
+        print("BigQuery client not initialized. Cannot insert inventory item.")
+        return False
+
+    query = f"""
+    INSERT INTO `{TABLE_INVENTORY_ITEM}` (
+        id, business_id, category, current_stock_level, is_perishable,
+        item_id, item_name, last_updated, reorder_threshold, shelf_life_days,
+        supplier_id, unit_cost, unit_price
+    ) VALUES (
+        @id, @business_id, @category, @current_stock_level, @is_perishable,
+        @item_id, @item_name, @last_updated, @reorder_threshold, @shelf_life_days,
+        @supplier_id, @unit_cost, @unit_price
+    )
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("id", "STRING", item_data.get('id')),
+            bigquery.ScalarQueryParameter("business_id", "STRING", item_data.get('business_id')),
+            bigquery.ScalarQueryParameter("category", "STRING", item_data.get('category')),
+            bigquery.ScalarQueryParameter("current_stock_level", "INT64", item_data.get('current_stock_level')),
+            bigquery.ScalarQueryParameter("is_perishable", "BOOL", item_data.get('is_perishable')),
+            bigquery.ScalarQueryParameter("item_id", "STRING", item_data.get('item_id')),
+            bigquery.ScalarQueryParameter("item_name", "STRING", item_data.get('item_name')),
+            bigquery.ScalarQueryParameter("last_updated", "TIMESTAMP", item_data.get('last_updated')),
+            bigquery.ScalarQueryParameter("reorder_threshold", "INT64", item_data.get('reorder_threshold')),
+            bigquery.ScalarQueryParameter("shelf_life_days", "INT64", item_data.get('shelf_life_days')),
+            bigquery.ScalarQueryParameter("supplier_id", "STRING", item_data.get('supplier_id')),
+            bigquery.ScalarQueryParameter("unit_cost", "FLOAT64", item_data.get('unit_cost')),
+            bigquery.ScalarQueryParameter("unit_price", "FLOAT64", item_data.get('unit_price')),
+        ]
+    )
+
+    try:
+        query_job = bq_client.query(query, job_config=job_config)
+        query_job.result()
+        print(f"BigQuery: Successfully inserted inventory item '{item_data.get('item_name')}' for business '{item_data.get('business_id')}'.")
+        return True
+    except Exception as e:
+        print(f"Error inserting inventory item to BigQuery: {e}")
+        return False
+
+def db_insert_sales_transaction(transaction_data: Dict[str, Any]) -> bool:
+    """
+    Inserts a single sales transaction into the `sales_transaction` BigQuery table.
+    """
+    print(f"\n--- Tool Call: db_insert_sales_transaction ---")
+    if not bq_client:
+        print("BigQuery client not initialized. Cannot insert sales transaction.")
+        return False
+
+    query = f"""
+    INSERT INTO `{TABLE_SALES_TRANSACTION}` (
+        id, business_id, cost_per_unit, customer_id, item_id, item_name,
+        line_item_id, payment_method, price_per_unit, quantity, timestamp,
+        total_line_cost, total_line_profit, total_line_revenue, transaction_date, transaction_id
+    ) VALUES (
+        @id, @business_id, @cost_per_unit, @customer_id, @item_id, @item_name,
+        @line_item_id, @payment_method, @price_per_unit, @quantity, @timestamp,
+        @total_line_cost, @total_line_profit, @total_line_revenue, @transaction_date, @transaction_id
+    )
+    """
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("id", "STRING", transaction_data.get('id')),
+            bigquery.ScalarQueryParameter("business_id", "STRING", transaction_data.get('business_id')),
+            bigquery.ScalarQueryParameter("cost_per_unit", "FLOAT64", transaction_data.get('cost_per_unit')),
+            bigquery.ScalarQueryParameter("customer_id", "STRING", transaction_data.get('customer_id')),
+            bigquery.ScalarQueryParameter("item_id", "STRING", transaction_data.get('item_id')),
+            bigquery.ScalarQueryParameter("item_name", "STRING", transaction_data.get('item_name')),
+            bigquery.ScalarQueryParameter("line_item_id", "STRING", transaction_data.get('line_item_id')),
+            bigquery.ScalarQueryParameter("payment_method", "STRING", transaction_data.get('payment_method')),
+            bigquery.ScalarQueryParameter("price_per_unit", "FLOAT64", transaction_data.get('price_per_unit')),
+            bigquery.ScalarQueryParameter("quantity", "INT64", transaction_data.get('quantity')),
+            bigquery.ScalarQueryParameter("timestamp", "TIMESTAMP", transaction_data.get('timestamp')),
+            bigquery.ScalarQueryParameter("total_line_cost", "FLOAT64", transaction_data.get('total_line_cost')),
+            bigquery.ScalarQueryParameter("total_line_profit", "FLOAT64", transaction_data.get('total_line_profit')),
+            bigquery.ScalarQueryParameter("total_line_revenue", "FLOAT64", transaction_data.get('total_line_revenue')),
+            bigquery.ScalarQueryParameter("transaction_date", "DATE", transaction_data.get('transaction_date')),
+            bigquery.ScalarQueryParameter("transaction_id", "STRING", transaction_data.get('transaction_id')),
+        ]
+    )
+
+    try:
+        query_job = bq_client.query(query, job_config=job_config)
+        query_job.result()
+        print(f"BigQuery: Successfully inserted sales transaction for item '{transaction_data.get('item_name')}' for business '{transaction_data.get('business_id')}'.")
+        return True
+    except Exception as e:
+        print(f"Error inserting sales transaction to BigQuery: {e}")
+        return False
+
+# --- NEW TOOL FOR GENERATING SIMULATED DATA ---
+
+def agent_generate_simulated_data(business_id: str) -> bool:
+    """
+    Generates simulated inventory and sales data for a given business ID using Gemini.
+    It fetches all business details and lets Gemini infer the business_type
+    to generate relevant data.
+
+    Args:
+        business_id (str): The ID of the business for which to generate data.
+
+    Returns:
+        bool: True if data generation and storage was successful, False otherwise.
+    """
+    print(f"\n--- Tool Call: agent_generate_simulated_data ---")
+
+    # Step 1: Get ALL business details from the database
+    business_details = db_get_business_details(business_id)
+    if not business_details:
+        print(f"Error: Could not retrieve business details for business_id '{business_id}'. Cannot generate simulated data.")
+        return False
+
+    business_name = business_details.get('name', 'N/A')
+    business_address = business_details.get('address', 'N/A')
+    business_description = business_details.get('description', 'N/A')
+    # If business_type is already stored, include it as a strong hint for Gemini
+    # otherwise, Gemini will have to infer it from name/description.
+    stored_business_type = business_details.get('business_type', 'unknown type')
+    gmb_id = business_details.get('gmb_id', 'N/A')
+    owner_contact = business_details.get('owner_contact', 'N/A')
+
+
+    print(f"  Generating simulated data for business ID '{business_id}'.")
+    print(f"  Business Name: {business_name}, Description: {business_description}, Stored Type: {stored_business_type}")
+
+
+    if not gemini_model:
+        print("Gemini model not initialized. Cannot generate simulated data.")
+        return False
+
+    # Define the JSON schema for Gemini's response
+    # Added 'inferred_business_type' to the schema
+    response_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "inferred_business_type": {
+                "type": "STRING",
+                "description": "The business type inferred by Gemini from the provided details (e.g., 'Coffee Shop', 'Shoe Store', 'Grocery Store')."
+            },
+            "inventory_items": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "item_name": {"type": "STRING", "description": "Name of the inventory item"},
+                        "category": {"type": "STRING", "description": "Category of the item (e.g., 'Beverage', 'Pastry', 'Footwear')"},
+                        "current_stock_level": {"type": "INTEGER", "description": "Current number of units in stock"},
+                        "reorder_threshold": {"type": "INTEGER", "description": "Stock level at which to reorder"},
+                        "unit_cost": {"type": "NUMBER", "format": "float", "description": "Cost to the business per unit"},
+                        "unit_price": {"type": "NUMBER", "format": "float", "description": "Selling price per unit"},
+                        "is_perishable": {"type": "BOOLEAN", "description": "True if the item has a limited shelf life"},
+                        "shelf_life_days": {"type": "INTEGER", "description": "Number of days item remains fresh, if perishable"}
+                    },
+                    "required": ["item_name", "category", "current_stock_level", "reorder_threshold", "unit_cost", "unit_price"]
+                }
+            },
+            "sales_transactions": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "item_name": {"type": "STRING", "description": "Name of the item sold (must match an inventory item name)"},
+                        "quantity": {"type": "INTEGER", "description": "Number of units sold in this transaction line item"},
+                        "price_per_unit": {"type": "NUMBER", "format": "float", "description": "Actual price per unit at sale time"},
+                        "timestamp": {"type": "STRING", "format": "date-time", "description": "ISO 8601 timestamp of the transaction"},
+                        "payment_method": {"type": "STRING", "description": "Payment method (e.g., 'Credit Card', 'Cash', 'Mobile Pay')"},
+                        "customer_id": {"type": "STRING", "description": "Optional customer identifier"}
+                    },
+                    "required": ["item_name", "quantity", "price_per_unit", "timestamp"]
+                }
+            }
+        },
+        "required": ["inferred_business_type", "inventory_items", "sales_transactions"]
+    }
+
+    # Construct the prompt for Gemini, including all details for inference
+    prompt = f"""
+    Based on the following business details, first **infer the most appropriate business type**.
+    Then, generate realistic simulated inventory items and sales transactions relevant to that **inferred business type**.
+
+    **Business Details:**
+    - Name: {business_name}
+    - Address: {business_address}
+    - Description: {business_description}
+    - Stored Business Type (if any): {stored_business_type}
+    - GMB ID: {gmb_id}
+    - Owner Contact: {owner_contact}
+
+    For inventory, create 5-10 distinct items relevant to the inferred business type. Include typical stock levels, reorder points, costs, and prices. Consider if items are perishable.
+    
+    For sales, generate 30-50 sales transactions over the last 60 days. Ensure the 'item_name' in sales transactions exactly matches an 'item_name' from your generated inventory items. Vary quantities, prices (slightly, if realistic), and timestamps to simulate trends. Include payment methods and optional customer IDs.
+    
+    Provide the output as a JSON object strictly conforming to the following schema:
+    """
+
+    try:
+        # Call Gemini with the structured response schema
+        response = gemini_model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json", "response_schema": response_schema}
+        )
+
+        if not response.text:
+            print("Gemini API returned no content for simulated data generation.")
+            return False
+
+        generated_data = json.loads(response.text)
+
+        inferred_business_type = generated_data.get("inferred_business_type", "unknown")
+        inventory_items = generated_data.get("inventory_items", [])
+        sales_transactions = generated_data.get("sales_transactions", [])
+
+        if not inventory_items and not sales_transactions:
+            print("Gemini generated empty inventory and sales data.")
+            return False
+
+        print(f"Gemini inferred business type: {inferred_business_type}")
+
+        # Store Inventory Items
+        print(f"Storing {len(inventory_items)} generated inventory items...")
+        item_name_to_id_map = {} # To link sales transactions to item_ids
+        for item in inventory_items:
+            item_id = str(uuid.uuid4())
+            item_name_to_id_map[item['item_name']] = item_id
+            
+            insert_data = {
+                "id": str(uuid.uuid4()),
+                "business_id": business_id,
+                "category": item.get('category'),
+                "current_stock_level": item.get('current_stock_level'),
+                "is_perishable": item.get('is_perishable', False),
+                "item_id": item_id,
+                "item_name": item.get('item_name'),
+                "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "reorder_threshold": item.get('reorder_threshold'),
+                "shelf_life_days": item.get('shelf_life_days'),
+                "supplier_id": str(uuid.uuid4())[:8], # Mock supplier ID
+                "unit_cost": item.get('unit_cost'),
+                "unit_price": item.get('unit_price'),
+            }
+            db_insert_inventory_item(insert_data)
+
+        # Store Sales Transactions
+        print(f"Storing {len(sales_transactions)} generated sales transactions...")
+        for transaction in sales_transactions:
+            item_name = transaction.get('item_name')
+            item_id = item_name_to_id_map.get(item_name) # Get item_id from map
+
+            if not item_id:
+                print(f"Warning: Skipping sales transaction for unknown item_name '{item_name}'.")
+                continue
+
+            quantity = transaction.get('quantity', 0)
+            price_per_unit = transaction.get('price_per_unit', 0.0)
+            cost_per_unit = 0.0 # Will try to derive from inventory if possible
+            
+            # Attempt to find unit_cost from generated inventory items
+            for inv_item in inventory_items:
+                if inv_item.get('item_name') == item_name:
+                    cost_per_unit = inv_item.get('unit_cost', 0.0)
+                    break
+
+            total_line_revenue = quantity * price_per_unit
+            total_line_cost = quantity * cost_per_unit
+            total_line_profit = total_line_revenue - total_line_cost
+
+            # Ensure timestamp is in correct format
+            timestamp_str = transaction.get('timestamp')
+            transaction_dt = None
+            if timestamp_str:
+                try:
+                    # Parse assuming ISO 8601, then convert to UTC and isoformat
+                    transaction_dt = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                except ValueError:
+                    print(f"Warning: Could not parse timestamp '{timestamp_str}'. Using current time.")
+                    transaction_dt = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            else:
+                transaction_dt = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+            insert_data = {
+                "id": str(uuid.uuid4()),
+                "business_id": business_id,
+                "cost_per_unit": cost_per_unit,
+                "customer_id": transaction.get('customer_id', str(uuid.uuid4())[:8]), # Mock customer ID
+                "item_id": item_id,
+                "item_name": item_name,
+                "line_item_id": str(uuid.uuid4()),
+                "payment_method": transaction.get('payment_method', 'Unknown'),
+                "price_per_unit": price_per_unit,
+                "quantity": quantity,
+                "timestamp": transaction_dt,
+                "total_line_cost": total_line_cost,
+                "total_line_profit": total_line_profit,
+                "total_line_revenue": total_line_revenue,
+                "transaction_date": transaction_dt.split('T')[0], # Extract date part
+                "transaction_id": str(uuid.uuid4()),
+            }
+            db_insert_sales_transaction(insert_data)
+
+        print(f"Simulated data generation and storage complete for '{inferred_business_type}' business.")
+        return True
+
+    except Exception as e:
+        print(f"Error in agent_generate_simulated_data: {e}")
+        return False
+
+
 # --- Main function for independent testing ---
 if __name__ == "__main__":
     # from ...shared_libraries import constants
@@ -365,14 +714,14 @@ if __name__ == "__main__":
 
 
     # --- Test 4: Search Google Maps ---
-    print("\nSearching Google Maps for 'Starbucks Houston Galleria'...")
-    gmaps_results = Maps_search_business("Starbucks Houston Galleria")
-    if gmaps_results:
-        print(f"Test 4 Passed: Found {len(gmaps_results)} results from Google Maps.")
-        for i, res in enumerate(gmaps_results[:3]): # Print first 3 results
-            print(f"  Result {i+1}: Name: {res.get('name')}, Address: {res.get('address')}, Place ID: {res.get('place_id')}")
-    else:
-        print("Test 4 Failed: No results from Google Maps.")
+    # print("\nSearching Google Maps for 'Starbucks Houston Galleria'...")
+    # gmaps_results = Maps_search_business("Starbucks Houston Galleria")
+    # if gmaps_results:
+    #     print(f"Test 4 Passed: Found {len(gmaps_results)} results from Google Maps.")
+    #     for i, res in enumerate(gmaps_results[:3]): # Print first 3 results
+    #         print(f"  Result {i+1}: Name: {res.get('name')}, Address: {res.get('address')}, Place ID: {res.get('place_id')}")
+    # else:
+    #     print("Test 4 Failed: No results from Google Maps.")
 
 
     # --- Test 5: Check Competitors (for the new business, should be empty) ---
@@ -414,5 +763,16 @@ if __name__ == "__main__":
     # else:
     #     print("\nSkipping Test 7: Business not created.")
 
+    # --- Test 8: Generate Simulated Data ---
+    created_business_id= 'biz_629fd84f'
+    if created_business_id:
+        print(f"\nGenerating simulated data for business ID '{created_business_id}' (Type: 'Coffee Shop')...")
+        simulated_data_generated = agent_generate_simulated_data(created_business_id, "Coffee Shop")
+        if simulated_data_generated:
+            print("Test 8 Passed: Simulated data generated and stored successfully.")
+        else:
+            print("Test 8 Failed: Simulated data generation failed.")
+    else:
+        print("\nSkipping Test 8: Business not created.")
 
     print("\n--- Independent tool testing complete ---")
