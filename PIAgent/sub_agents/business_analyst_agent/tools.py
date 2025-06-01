@@ -13,7 +13,7 @@ import google.generativeai as genai
 import dotenv
 dotenv.load_dotenv()
 
-from ..comparision_agent.tools import db_get_business_details
+# from ..comparision_agent.tools import db_get_business_details
 
 # --- Gemini API Configuration ---
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -170,24 +170,28 @@ def db_get_sales_trends_data(business_id: str, start_date: Optional[str] = None,
     FROM `{TABLE_SALES_TRANSACTION}`
     WHERE business_id = @business_id
     """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("business_id", "STRING", business_id),
-        ]
-    )
+
+    parameters = [
+        bigquery.ScalarQueryParameter("business_id", "STRING", business_id),
+    ]
 
     if start_date:
         query += " AND transaction_date >= @start_date"
-        job_config.query_parameters.append(
+        parameters.append(
             bigquery.ScalarQueryParameter("start_date", "DATE", datetime.strptime(start_date, '%Y-%m-%d').date())
         )
     if end_date:
         query += " AND transaction_date <= @end_date"
-        job_config.query_parameters.append(
+        parameters.append(
             bigquery.ScalarQueryParameter("end_date", "DATE", datetime.strptime(end_date, '%Y-%m-%d').date())
         )
 
+    job_config = bigquery.QueryJobConfig(query_parameters=parameters)
+
     query += " ORDER BY timestamp ASC"
+    print("Executing Query:\n", query)
+    # Corrected print statement: removed .field_type
+    print("With Parameters:\n", [f"{p.name}={p.value}" for p in parameters])
 
     try:
         query_job = bq_client.query(query, job_config=job_config)
@@ -306,8 +310,21 @@ def agent_analyze_sales_trends(business_id: str, start_date: Optional[str] = Non
     if not sales_data:
         return f"No sales data found for your business {time_period}."
 
-    data_summary = json.dumps(sales_data, indent=2)
-    business_details = db_get_business_details(business_id)
+    # --- START OF FIX: Convert datetime objects to strings for JSON serialization ---
+    serializable_sales_data = []
+    for record in sales_data:
+        serializable_record = record.copy()
+        # Convert 'timestamp' if it exists and is a datetime object
+        if 'timestamp' in serializable_record and isinstance(serializable_record['timestamp'], datetime):
+            serializable_record['timestamp'] = serializable_record['timestamp'].isoformat()
+        # Also handle 'transaction_date' if it's explicitly returned and is a date object
+        if 'transaction_date' in serializable_record and isinstance(serializable_record['transaction_date'], datetime.date):
+             serializable_record['transaction_date'] = serializable_record['transaction_date'].isoformat()
+        serializable_sales_data.append(serializable_record)
+    # --- END OF FIX ---
+
+    data_summary = json.dumps(serializable_sales_data, indent=2) # Use the serializable data
+    business_details = db_get_business_details(business_id) # Call the mock or actual db_get_business_details
     business_name = business_details.get('name', 'your business') if business_details else 'your business'
 
 
@@ -326,7 +343,7 @@ def agent_analyze_sales_trends(business_id: str, start_date: Optional[str] = Non
 
     Provide a concise summary of your findings in markdown format, with clear headings and bullet points.
     """
-
+    # print(prompt)
     try:
         response = gemini_model.generate_content(prompt)
         return response.text
@@ -373,3 +390,64 @@ def agent_check_inventory_levels(business_id: str, low_stock_only: bool = False)
         return response.text
     except Exception as e:
         return f"Error generating inventory report with Gemini: {e}"
+    
+def db_get_business_details(business_id: str) -> Optional[Dict[str, Any]]:
+    """
+    MOCK FUNCTION: Retrieves mock business details.
+    In a real scenario, this would query your BigQuery 'business' table.
+    """
+    print(f"\n--- MOCK Tool Call: db_get_business_details(business_id='{business_id}') ---")
+    # You should replace this with actual data from your BigQuery 'business' table
+    # if you want more realistic testing without running the full agent system.
+    if business_id == "biz_64d349ec":
+        return {
+            "business_id": "biz_64d349ec",
+            "name": "Shipley Do-Nuts",
+            "address": "123 Main St, Houston, TX",
+            "business_type": "Donut Shop", # Crucial for data generation
+            "description": "A popular donut and coffee shop.",
+            "gmb_id": "ChIJE7Ar-mwjQYYRifD8cBm-tUQ",
+            "owner_contact": "owner@example.com"
+        }
+    elif business_id == "biz_coffee_001": # Example for a coffee shop
+        return {
+            "business_id": "biz_coffee_001",
+            "name": "The Daily Grind",
+            "address": "456 Oak Ave, Houston, TX",
+            "business_type": "Coffee Shop",
+            "description": "Cozy coffee shop with artisanal brews.",
+            "gmb_id": "ChIJ_coffee_gmb_id",
+            "owner_contact": "coffee@example.com"
+        }
+    # Add more mock business details as needed for your tests
+    return None
+# --- Main execution block for independent testing ---
+if __name__ == "__main__":
+    print("--- Starting independent  Agent Tool testing ---")
+
+    # IMPORTANT: Before running this live test:
+    # 1. Ensure your BigQuery tables (`business`, `competitor`, `business_review`)
+    #    are set up and contain relevant data.
+    # 2. You need a 'business' entry with a valid `g_m_b_id` for `YOUR_BUSINESS_ID`.
+    # 3. You need 'competitor' entries associated with `YOUR_BUSINESS_ID` and having
+    #    valid `google_place_id` values.
+    # 4. Your GCP project must have 'Places API (New)' enabled.
+    # 5. Your `GEMINI_API_KEY` must be set in your environment.
+
+    # --- SET YOUR TEST BUSINESS ID HERE ---
+    YOUR_BUSINESS_ID = "biz_64d349ec" 
+    # Example: "biz_coffee_001" if you used the mock setup previously and populated
+    # the actual DB, or retrieve an ID from your BigQuery `business` table.
+
+    if YOUR_BUSINESS_ID == "":
+        print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("! WARNING: Please set YOUR_BUSINESS_ID to an actual existing !")
+        print("!          business_id from your BigQuery 'business' table  !")
+        print("!          for the live test to function correctly.         !")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    else:
+        # Call the live test function
+        print(agent_analyze_sales_trends(YOUR_BUSINESS_ID, time_period="last 30 days"))
+        # maps_get_place_reviews('ChIJE7Ar-mwjQYYRifD8cBm-tUQ')  # Example call to test the Maps API tool directly
+
+    print("\n--- Comparative Agent Tool testing complete ---")
