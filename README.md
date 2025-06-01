@@ -47,3 +47,25 @@ Developing ProfitPilot highlighted several critical insights:
 - **LLM & Structured Data**: Effectively transforming structured data (e.g., BigQuery results as JSON) for Gemini's analysis is crucial for deriving precise insights.
 - **External API Integration**: Seamlessly integrating external services like Google Maps for real-time competitive data proved essential.
 - **Context Management**: Maintaining conversational context and `business_id` across agents is key to a fluid user experience.
+
+---
+
+## Deployment Steps
+
+```bash
+export GOOGLE_API_KEY=
+export GOOGLE_MAP_API_KEY=
+export GOOGLE_CLOUD_PROJECT=
+export BQ_DATASET_ID=
+export GOOGLE_GENAI_USE_VERTEXAI=FALSE
+export GOOGLE_CLOUD_LOCATION=
+export AGENT_PATH="./PIAgent"
+export APP_NAME="profitpilot-agent-app"
+export SERVICE_NAME="profitpilot-agent-service"
+
+adk deploy cloud_run \
+  --project=$GOOGLE_CLOUD_PROJECT \
+  --region=$GOOGLE_CLOUD_LOCATION \
+  --service_name=$SERVICE_NAME \
+  --app_name=$APP_NAME \
+  --with_ui $AGENT_PATH
